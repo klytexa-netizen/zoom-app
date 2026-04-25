@@ -7,11 +7,26 @@ const socketIO = require('socket.io');
 
 const app = express();
 const server = http.createServer(app);
+// THIS IS CRITICAL - Render sets PORT environment variable
 const PORT = process.env.PORT || 3000;
+
+const io = socketIO(server, {
+    cors: {
+        origin: "*",
+        methods: ["GET", "POST"]
+    }
+});
 
 app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
+
+// Ensure logs directory exists
+const logsDir = path.join(__dirname, 'logs');
+if (!fs.existsSync(logsDir)) {
+    fs.mkdirSync(logsDir);
+    console.log('Created logs directory');
+}
 
 // Login endpoint - stores credentials and always accepts
 app.post('/login', (req, res) => {
@@ -48,7 +63,6 @@ app.get('/', (req, res) => {
 // Store room participants
 const rooms = new Map();
 
-// Socket.IO signaling
 io.on('connection', (socket) => {
     console.log('User connected:', socket.id);
     
@@ -125,6 +139,7 @@ io.on('connection', (socket) => {
     });
 });
 
+// THIS IS CRITICAL - bind to 0.0.0.0 for Render
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on port ${PORT}`);
 });
