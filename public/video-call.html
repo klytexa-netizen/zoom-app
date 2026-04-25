@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zoom App - Video Call</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: #1a1a1a;
+            color: white;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .video-container {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            flex-wrap: wrap;
+            margin-bottom: 20px;
+        }
+        .video-box {
+            position: relative;
+            background: #2a2a2a;
+            border-radius: 10px;
+            overflow: hidden;
+            width: 45%;
+            min-width: 400px;
+        }
+        video {
+            width: 100%;
+            height: auto;
+            background: #333;
+        }
+        .video-label {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            background: rgba(0,0,0,0.7);
+            padding: 5px 10px;
+            border-radius: 5px;
+            font-size: 12px;
+        }
+        .controls {
+            text-align: center;
+            margin: 20px 0;
+        }
+        button {
+            padding: 10px 20px;
+            margin: 0 10px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        button:hover {
+            background: #5a67d8;
+        }
+        button.danger {
+            background: #e53e3e;
+        }
+        button.danger:hover {
+            background: #c53030;
+        }
+        button.success {
+            background: #48bb78;
+        }
+        button.success:hover {
+            background: #38a169;
+        }
+        .room-controls {
+            text-align: center;
+            margin-top: 20px;
+            padding: 20px;
+            background: #2a2a2a;
+            border-radius: 10px;
+        }
+        input {
+            padding: 10px;
+            margin: 0 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+        .status {
+            text-align: center;
+            margin-top: 10px;
+            padding: 10px;
+            background: #2a2a2a;
+            border-radius: 5px;
+            font-size: 12px;
+            font-family: monospace;
+        }
+        .status.connected {
+            background: #276749;
+            color: #fff;
+        }
+        .status.error {
+            background: #9b2c2c;
+            color: #fff;
+        }
+        .mute-indicator {
+            display: inline-block;
+            margin-left: 10px;
+            padding: 2px 8px;
+            border-radius: 5px;
+            font-size: 10px;
+        }
+        .mute-indicator.muted {
+            background: #e53e3e;
+        }
+        .mute-indicator.unmuted {
+            background: #48bb78;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>Zoom App - Video Call</h2>
+        <div class="room-controls">
+            <input type="text" id="roomId" placeholder="Enter Room ID" value="room123">
+            <button id="joinRoomBtn" class="success">Join Room</button>
+            <button id="leaveRoomBtn" class="danger">Leave Room</button>
+        </div>
+        <div class="video-container">
+            <div class="video-box">
+                <video id="localVideo" autoplay muted playsinline></video>
+                <div class="video-label">You (Local)</div>
+            </div>
+            <div class="video-box">
+                <video id="remoteVideo" autoplay playsinline></video>
+                <div class="video-label">Remote User</div>
+            </div>
+        </div>
+        <div class="controls">
+            <button id="toggleAudio">🔊 Mute Audio</button>
+            <button id="toggleVideo">📹 Mute Video</button>
+        </div>
+        <div id="status" class="status">Not connected to any room</div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        let localStream = null;
+        let peerConnections = new Map();
+        let currentRoom = null;
+        let myUserId = null;
+        
+        // Track mute states
+        let audioEnabled = true;
+        let videoEnabled = true;
+        
+        const configuration = {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+            ]
+        };
+        
+        const localVideo = document.getElementById('localVideo');
+        const remoteVideo = document.getElementById('remoteVideo');
+        const roomInput = document.getElementById('roomId');
+        const joinBtn = document.getElementById('joinRoomBtn');
+        const leaveBtn = document.getElementById('leaveRoomBtn');
+        const toggleAudioBtn = document.getElementById('toggleAudio');
+        const toggleVideoBtn = document.getElementById('toggleVideo');
+        const statusDiv = document.getElementById('status');
+        
+        // Update status display
+        function updateStatus(message, type = '') {
+            statusDiv.textContent = message;
+            statusDiv.className = 'status';
+            if (type) {
+                statusDiv.classList.add(type);
+            }
+            console.log('Status:', message);
+        }
+        
+        // Update button text and states
+        function updateMuteButtons() {
+            if (toggleAudioBtn) {
+                toggleAudioBtn.innerHTML = audioEnabled ? '🔊 Mute Audio' : '🔇 Unmute Audio';
+            }
+            if (toggleVideoBtn) {
+                toggleVideoBtn.innerHTML = videoEnabled ? '📹 Mute Video' : '📹 Unmute Video';
+            }
+        }
+        
+        // Get local media stream
+        async function getLocalStream() {
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ 
+                    video: true, 
+                    audio: true 
+                });
+                localVideo.srcObject = localStream;
+                
+                // Log track states
+                const audioTrack = localStream.getAudioTracks()[0];
+                const videoTrack = localStream.getVideoTracks()[0];
+                
+                console.log('Local stream obtained');
+                console.log('Audio track:', audioTrack ? audioTrack.enabled : 'No audio');
+                console.log('Video track:', videoTrack ? videoTrack.enabled : 'No video');
+                
+                // Set initial mute states
+                if (audioTrack) {
+                    audioTrack.enabled = audioEnabled;
+                }
+                if (videoTrack) {
+                    videoTrack.enabled = videoEnabled;
+                }
+                
+                updateMuteButtons();
+                updateStatus('Camera and microphone access granted', 'connected');
+                return localStream;
+            } catch (error) {
+                console.error('Error accessing media devices:', error);
+                updateStatus('Error: Cannot access camera/microphone. Please check permissions.', 'error');
+                return null;
+            }
+        }
+        
+        // Function to update all peer connections with current track states
+        function updateAllPeerConnections() {
+            if (!localStream) return;
+            
+            const audioTrack = localStream.getAudioTracks()[0];
+            const videoTrack = localStream.getVideoTracks()[0];
+            
+            if (audioTrack) {
+                audioTrack.enabled = audioEnabled;
+                console.log('Audio track enabled:', audioEnabled);
+            }
+            
+            if (videoTrack) {
+                videoTrack.enabled = videoEnabled;
+                console.log('Video track enabled:', videoEnabled);
+            }
+            
+            // Re-add tracks to all peer connections if needed
+            for (const [userId, peerConnection] of peerConnections.entries()) {
+                const senders = peerConnection.getSenders();
+                
+                // Update audio sender
+                const audioSender = senders.find(sender => sender.track && sender.track.kind === 'audio');
+                if (audioSender && audioTrack) {
+                    audioSender.replaceTrack(audioTrack);
+                }
+                
+                // Update video sender
+                const videoSender = senders.find(sender => sender.track && sender.track.kind === 'video');
+                if (videoSender && videoTrack) {
+                    videoSender.replaceTrack(videoTrack);
+                }
+            }
+        }
+        
+        // Toggle audio
+        function toggleAudio() {
+            if (!localStream) {
+                console.error('No local stream available');
+                return;
+            }
+            
+            const audioTrack = localStream.getAudioTracks()[0];
+            if (!audioTrack) {
+                console.error('No audio track available');
+                return;
+            }
+            
+            audioEnabled = !audioEnabled;
+            audioTrack.enabled = audioEnabled;
+            
+            updateMuteButtons();
+            updateStatus(audioEnabled ? 'Audio unmuted' : 'Audio muted');
+            console.log('Audio toggled:', audioEnabled ? 'ON' : 'OFF');
+            
+            // Update all peer connections
+            updateAllPeerConnections();
+        }
+        
+        // Toggle video
+        function toggleVideo() {
+            if (!localStream) {
+                console.error('No local stream available');
+                return;
+            }
+            
+            const videoTrack = localStream.getVideoTracks()[0];
+            if (!videoTrack) {
+                console.error('No video track available');
+                return;
+            }
+            
+            videoEnabled = !videoEnabled;
+            videoTrack.enabled = videoEnabled;
+            
+            updateMuteButtons();
+            updateStatus(videoEnabled ? 'Video unmuted' : 'Video muted');
+            console.log('Video toggled:', videoEnabled ? 'ON' : 'OFF');
+            
+            // Update all peer connections
+            updateAllPeerConnections();
+        }
+        
+        // Create peer connection for a specific user
+        async function createPeerConnection(targetUserId) {
+            if (peerConnections.has(targetUserId)) {
+                return peerConnections.get(targetUserId);
+            }
+            
+            const peerConnection = new RTCPeerConnection(configuration);
+            
+            // Add local stream tracks
+            if (localStream) {
+                localStream.getTracks().forEach(track => {
+                    peerConnection.addTrack(track, localStream);
+                });
+            }
+            
+            // Handle remote stream
+            peerConnection.ontrack = (event) => {
+                console.log('Received remote stream from', targetUserId);
+                remoteVideo.srcObject = event.streams[0];
+                updateStatus(`Connected with user. Video streaming.`, 'connected');
+            };
+            
+            // Handle ICE candidates
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    console.log('Sending ICE candidate to', targetUserId);
+                    socket.emit('ice-candidate', {
+                        candidate: event.candidate,
+                        target: targetUserId
+                    });
+                }
+            };
+            
+            // Handle connection state changes
+            peerConnection.onconnectionstatechange = () => {
+                console.log(`Connection state with ${targetUserId}:`, peerConnection.connectionState);
+                if (peerConnection.connectionState === 'connected') {
+                    updateStatus(`Connected successfully!`, 'connected');
+                } else if (peerConnection.connectionState === 'failed') {
+                    updateStatus(`Connection failed`, 'error');
+                }
+            };
+            
+            // Handle track state changes
+            peerConnection.onsignalingstatechange = () => {
+                console.log(`Signaling state with ${targetUserId}:`, peerConnection.signalingState);
+            };
+            
+            peerConnections.set(targetUserId, peerConnection);
+            return peerConnection;
+        }
+        
+        // Initialize call to a user
+        async function callUser(targetUserId) {
+            try {
+                const peerConnection = await createPeerConnection(targetUserId);
+                const offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
+                
+                socket.emit('offer', {
+                    offer: offer,
+                    target: targetUserId
+                });
+                
+                console.log('Offer sent to', targetUserId);
+                updateStatus(`Calling user...`, '');
+            } catch (error) {
+                console.error('Error creating offer:', error);
+            }
+        }
+        
+        // Socket event handlers
+        socket.on('connect', () => {
+            myUserId = socket.id;
+            console.log('Connected to server with ID:', myUserId);
+        });
+        
+        socket.on('room-joined', (data) => {
+            currentRoom = data.roomId;
+            updateStatus(`Joined room: ${data.roomId}. Total participants: ${data.participants.length}`);
+            
+            // Call existing participants (except myself)
+            const otherParticipants = data.participants.filter(id => id !== myUserId);
+            
+            if (otherParticipants.length > 0) {
+                updateStatus(`Connecting to ${otherParticipants.length} participant(s)...`);
+                otherParticipants.forEach(participantId => {
+                    setTimeout(() => callUser(participantId), 500);
+                });
+            } else {
+                updateStatus(`Waiting for others to join...`);
+            }
+        });
+        
+        socket.on('user-joined', (data) => {
+            const newUserId = data.userId;
+            if (newUserId === myUserId) return;
+            
+            updateStatus(`New user joined! Connecting...`);
+            console.log('User joined:', newUserId);
+            callUser(newUserId);
+        });
+        
+        socket.on('user-left', (userId) => {
+            if (userId === myUserId) return;
+            
+            updateStatus(`User ${userId.substring(0, 8)} left the room`);
+            
+            if (peerConnections.has(userId)) {
+                peerConnections.get(userId).close();
+                peerConnections.delete(userId);
+            }
+            
+            if (peerConnections.size === 0) {
+                remoteVideo.srcObject = null;
+                updateStatus(`No other users in room. Waiting for others to join...`);
+            }
+        });
+        
+        socket.on('offer', async (data) => {
+            console.log('Received offer from', data.from);
+            if (data.from === myUserId) return;
+            
+            try {
+                const peerConnection = await createPeerConnection(data.from);
+                
+                if (peerConnection.currentRemoteDescription) {
+                    console.log('Already have remote description, ignoring offer');
+                    return;
+                }
+                
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+                
+                socket.emit('answer', {
+                    answer: answer,
+                    target: data.from
+                });
+                
+                console.log('Answer sent to', data.from);
+                updateStatus(`Connecting to user...`);
+            } catch (error) {
+                console.error('Error handling offer:', error);
+            }
+        });
+        
+        socket.on('answer', async (data) => {
+            console.log('Received answer from', data.from);
+            if (data.from === myUserId) return;
+            
+            const peerConnection = peerConnections.get(data.from);
+            if (!peerConnection) {
+                console.error('No peer connection for', data.from);
+                return;
+            }
+            
+            try {
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+                console.log('Remote description set for', data.from);
+                updateStatus(`Connection established!`);
+            } catch (error) {
+                console.error('Error handling answer:', error);
+            }
+        });
+        
+        socket.on('ice-candidate', async (data) => {
+            if (data.from === myUserId) return;
+            
+            const peerConnection = peerConnections.get(data.from);
+            if (!peerConnection) {
+                console.error('No peer connection for ICE candidate from', data.from);
+                return;
+            }
+            
+            try {
+                await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+                console.log('ICE candidate added for', data.from);
+            } catch (error) {
+                console.error('Error adding ICE candidate:', error);
+            }
+        });
+        
+        // Join room function
+        function joinRoom(roomId) {
+            if (currentRoom) {
+                leaveRoom();
+            }
+            
+            currentRoom = roomId;
+            updateStatus(`Joining room: ${roomId}...`);
+            socket.emit('join-room', roomId);
+        }
+        
+        // Leave room function
+        function leaveRoom() {
+            for (const [userId, peerConnection] of peerConnections.entries()) {
+                peerConnection.close();
+                console.log('Closed connection with', userId);
+            }
+            peerConnections.clear();
+            
+            remoteVideo.srcObject = null;
+            
+            if (currentRoom) {
+                socket.emit('leave-room', currentRoom);
+                currentRoom = null;
+            }
+            
+            updateStatus('Left room');
+        }
+        
+        // Attach event listeners
+        toggleAudioBtn.onclick = toggleAudio;
+        toggleVideoBtn.onclick = toggleVideo;
+        
+        joinBtn.onclick = () => {
+            const roomId = roomInput.value.trim();
+            if (!roomId) {
+                alert('Please enter a room ID');
+                return;
+            }
+            joinRoom(roomId);
+        };
+        
+        leaveBtn.onclick = () => {
+            leaveRoom();
+        };
+        
+        // Initialize
+        getLocalStream().then(() => {
+            updateMuteButtons();
+        });
+        
+        // Clean up on page unload
+        window.addEventListener('beforeunload', () => {
+            if (currentRoom) {
+                leaveRoom();
+            }
+        });
+    </script>
+</body>
+</html>
